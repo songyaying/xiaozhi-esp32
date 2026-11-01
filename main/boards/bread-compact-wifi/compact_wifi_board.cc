@@ -1,3 +1,7 @@
+// bread-compact-wifi + SHT30 temperature/humidity sensor
+// SHT30 uses a dedicated I2C bus (I2C1) on SDA=GPIO21 / SCL=GPIO14,
+// so the OLED display bus (I2C0, GPIO41/42) is never touched.
+
 #include "wifi_board.h"
 #include "codecs/no_audio_codec.h"
 #include "display/oled_display.h"
