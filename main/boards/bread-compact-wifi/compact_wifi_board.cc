@@ -10,6 +10,8 @@
 #include "led/single_led.h"
 #include "assets/lang_config.h"
 
+#include <cstdio>
+
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <esp_lcd_panel_ops.h>
@@ -24,6 +26,8 @@
 class CompactWifiBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t display_i2c_bus_;
+    i2c_master_bus_handle_t sht30_i2c_bus_ = nullptr;
+    i2c_master_dev_handle_t sht30_dev_ = nullptr;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
     Display* display_ = nullptr;
@@ -100,6 +104,63 @@ private:
         display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     }
 
+    // SHT30 温湿度传感器：走第二条独立的 I2C 总线（I2C1），不碰屏幕的 I2C0
+    void InitializeSht30() {
+        i2c_master_bus_config_t bus_config = {
+            .i2c_port = (i2c_port_t)1,
+            .sda_io_num = GPIO_NUM_21,
+            .scl_io_num = GPIO_NUM_14,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .intr_priority = 0,
+            .trans_queue_depth = 0,
+            .flags = {
+                .enable_internal_pullup = 1,
+            },
+        };
+        esp_err_t err = i2c_new_master_bus(&bus_config, &sht30_i2c_bus_);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "SHT30 bus create failed: %s", esp_err_to_name(err));
+            sht30_i2c_bus_ = nullptr;
+            return;
+        }
+
+        i2c_device_config_t dev_config = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = 0x44,
+            .scl_speed_hz = 100 * 1000,
+        };
+        err = i2c_master_bus_add_device(sht30_i2c_bus_, &dev_config, &sht30_dev_);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "SHT30 add device failed: %s", esp_err_to_name(err));
+            sht30_dev_ = nullptr;
+            return;
+        }
+        ESP_LOGI(TAG, "SHT30 ready: SDA=21 SCL=14 addr=0x44");
+    }
+
+    bool ReadSht30(float& temperature, float& humidity) {
+        if (sht30_dev_ == nullptr) {
+            return false;
+        }
+        const uint8_t cmd[2] = {0x2C, 0x06};  // 单次测量，高重复性
+        uint8_t data[6] = {0};
+        if (i2c_master_transmit(sht30_dev_, cmd, sizeof(cmd), 100) != ESP_OK) {
+            ESP_LOGW(TAG, "SHT30 write command failed");
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (i2c_master_receive(sht30_dev_, data, sizeof(data), 100) != ESP_OK) {
+            ESP_LOGW(TAG, "SHT30 read failed");
+            return false;
+        }
+        uint16_t raw_temperature = (uint16_t)((data[0] << 8) | data[1]);
+        uint16_t raw_humidity = (uint16_t)((data[3] << 8) | data[4]);
+        temperature = -45.0f + 175.0f * (float)raw_temperature / 65535.0f;
+        humidity = 100.0f * (float)raw_humidity / 65535.0f;
+        return true;
+    }
+
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
@@ -150,6 +211,25 @@ private:
     // 物联网初始化，逐步迁移到 MCP 协议
     void InitializeTools() {
         static LampController lamp(LAMP_GPIO);
+
+        auto& mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool(
+            "self.sensor.get_climate",
+            "读取当前房间的温度和湿度（摄氏度、百分比）。"
+            "当用户问「多少度」「现在温度多少」「热不热」「冷不冷」「湿度多少」"
+            "「房间环境怎么样」「屋里多少度」这类关于室内温湿度的问题时，都要调用它。",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                float temperature = 0.0f;
+                float humidity = 0.0f;
+                if (!ReadSht30(temperature, humidity)) {
+                    return std::string("{\"error\":\"sensor read failed\"}");
+                }
+                char buffer[96];
+                snprintf(buffer, sizeof(buffer), "{\"temperature\":%.1f,\"humidity\":%.1f}",
+                         temperature, humidity);
+                return std::string(buffer);
+            });
     }
 
 public:
@@ -160,6 +240,7 @@ public:
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
         InitializeDisplayI2c();
         InitializeSsd1306Display();
+        InitializeSht30();
         InitializeButtons();
         InitializeTools();
     }
