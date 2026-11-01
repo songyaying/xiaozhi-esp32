@@ -129,9 +129,31 @@ private:
             return;
         }
 
+        ESP_LOGI(TAG, "--- I2C1 scan (SDA=GPIO21, SCL=GPIO14) ---");
+        int ack_count = 0;
+        for (uint8_t candidate = 0x08; candidate < 0x78; ++candidate) {
+            if (i2c_master_probe(sht30_i2c_bus_, candidate, 10) == ESP_OK) {
+                ESP_LOGI(TAG, "  device ACK at 0x%02X", candidate);
+                ++ack_count;
+            }
+        }
+        if (ack_count == 0) {
+            ESP_LOGW(TAG, "  no device ACK on I2C1 - check VDD / GND / SDA / SCL");
+        } else {
+            ESP_LOGI(TAG, "  scan done, %d device(s)", ack_count);
+        }
+
+        uint16_t dev_addr = 0x44;
+        if (i2c_master_probe(sht30_i2c_bus_, 0x44, 20) != ESP_OK) {
+            if (i2c_master_probe(sht30_i2c_bus_, 0x45, 20) == ESP_OK) {
+                dev_addr = 0x45;
+                ESP_LOGW(TAG, "0x44 absent, using 0x45 instead");
+            }
+        }
+
         i2c_device_config_t dev_config = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = 0x44,
+            .device_address = dev_addr,
             .scl_speed_hz = 100 * 1000,
         };
         err = i2c_master_bus_add_device(sht30_i2c_bus_, &dev_config, &sht30_dev_);
@@ -140,7 +162,7 @@ private:
             sht30_dev_ = nullptr;
             return;
         }
-        ESP_LOGI(TAG, "SHT30 ready: SDA=21 SCL=14 addr=0x44");
+        ESP_LOGI(TAG, "SHT30 ready: SDA=21 SCL=14 addr=0x%02X", dev_addr);
     }
 
     bool ReadSht30(float& temperature, float& humidity) {
