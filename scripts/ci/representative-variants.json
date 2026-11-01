@@ -15,8 +15,8 @@
     },
     {
       "board": "bread-compact-wifi",
-      "name": "bread-compact-wifi",
-      "reason": "S3 with a 128x32 OLED and basic I2S audio"
+      "name": "bread-compact-wifi-128x64",
+      "reason": "S3 with a 128x64 OLED, basic I2S audio and SHT30 sensor"
     },
     {
       "board": "espressif/esp-hi",
